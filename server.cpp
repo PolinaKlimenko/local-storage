@@ -36,114 +36,88 @@ constexpr int max_events = 32;
 ////////////////////////////////////////////////////////////////////////
 class PersistentHashTable {
 private:
-    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>> table[2];
+    std::unordered_map<k, v> map;
     std::thread write_thread;
-    std::string log_file[2] = { "log1.log", "log2.log" };
-    std::string table_file[2] = { "table1.tab", "table2.tab" };
-    std::ofstream log_out;
+    std::string log_file = "log.txt";
+    std::string map_file = "map.txt";
     std::mutex mutex;
-    uint64_t active_ind = 0;
-    uint64_t current_version = 1;
     uint64_t flush_size = -1;
-    bool running;
-
-    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>& active() {
-        return table[active_ind % 2];
-    }
-    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>& inactive() {
-        return table[(active_ind + 1) % 2];
-    }
+    bool shutdown = false;
+    std::ofstream log_stream;
 
     void write_thread_func() {
-        while (running) {
-            std::ofstream table_out(table_file[(active_ind + 1) % 2], std::ofstream::out | std::ofstream::trunc);
+        while (!shutdown) {
+            if (shutdown)
+                break;
+            std::ofstream map_stream(map_file, std::ofstream::out | std::ofstream::trunc);
             uint64_t counter = 0;
-            for (auto& it : inactive()) {
-                table_out << it.first << " " << it.second.first << " " << it.second.second << "\n";
+            for (auto& el : map) {
+                map_stream << el.first << " " << el.second << "\n";
+                counter++;
                 if (flush_size > 0 && flush_size >= counter) {
-                    table_out.flush();
+                    map_stream.flush();
                     counter = 0;
                 }
             }
-            table_out.flush();
-            table_out.close();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            map_stream.flush();
+            log_stream.flush();
+            log_stream.close();
+            log_stream.open(log_file, std::ofstream::out | std::ofstream::trunc);
 
-            std::lock_guard<std::mutex> g(mutex);
-            active_ind++;
-            log_out.flush();
-            log_out.close();
-            log_out.open(log_file[active_ind % 2], std::ofstream::out | std::ofstream::trunc);
+            map_stream.close();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
 
-
-
-    void restore() {
-        for (int i = 0; i < 2; i++) {
-            std::ifstream table_in(table_file[i]);
-            std::ifstream log_in(log_file[i]);
-
-            std::string key;
-            std::uint64_t value;
-            std::uint64_t version;
-            while (table_in >> key >> value >> version) {
-                table[i][key] = { value, version };
-                if (version + 1 > current_version) {
-                    current_version = version + 1;
-                }
-            }
-
-            while (log_in >> key >> value >> version) {
-                table[i][key] = { value, version };
-                if (version + 1 > current_version) {
-                    current_version = version + 1;
-                }
-            }
-
-            table_in.close();
-            log_in.close();
+    void read_data() {
+        //std::lock_guard<std::mutex> g(mutex);
+        std::ifstream map_stream_in(map_file);
+        k key;
+        v val;
+        while (map_stream_in >> key >> val) {
+            map[key] = val;
         }
-
+        map_stream_in.close();
+        std::ifstream log_stream_in(log_file);
+        while (log_stream_in >> key >> val) {
+            map[key] = val;
+        }
+        log_stream_in.close();
     }
 
 public:
     PersistentHashTable() {
         std::lock_guard<std::mutex> g(mutex);
-        running = true;
-        restore();
-        log_out.open(log_file[active_ind % 2], std::ofstream::trunc);
+        read_data();
+        log_stream.open(log_file, std::ofstream::out | std::ofstream::trunc);
         write_thread = std::thread([this] { write_thread_func(); });
 
     }
     ~PersistentHashTable() {
-        running = false;
+        shutdown = true;
         write_thread.join();
-        log_out.flush();
-        log_out.close();
+        log_stream.flush();
+        log_stream.close();
     }
 
-    std::pair<bool, uint64_t> find(const std::string& key) {
+    void insert(const k& key, const v& value) {
         std::lock_guard<std::mutex> g(mutex);
-        std::pair<uint64_t, uint64_t> value;
-        for (int i = 0; i < 2; i++) {
-            auto it = table[i].find(key);
-            if (it != table[i].end() && it->second.second > value.second) {
-                value = it->second;
-            }
+        log_stream << key << " " << value << "\n";
+        map[key] = value;
+    }
+
+    bool find_and_fill_t(const k& key, v& t) {
+        std::lock_guard<std::mutex> g(mutex);
+        auto it = map.find(key);
+        if (it != map.end()) {
+            t = it->second;
+            return true;
         }
-        return std::make_pair(value.second != 0, value.first);
+        return false;
     }
-
-    void insert(const std::string& key, const uint64_t& value) {
-        std::lock_guard<std::mutex> g(mutex);
-        log_out << key << " " << value << current_version << "\n";
-        table[active_ind % 2][key] = { value, current_version };
-        current_version++;
-    }
-
-
 };
+
+/////////////////////////////////////////////////////////////////////////
 
 auto create_and_bind(std::string const& port)
 {
@@ -305,7 +279,9 @@ int main(int argc, const char** argv)
      */
 
     // TODO on-disk storage
-    PersistentHashTable storage;
+    PersistentHashTable <std::string, uint64_t> storage;
+
+    
     
     
     auto handle_get = [&] (const std::string& request) {
@@ -343,7 +319,7 @@ int main(int argc, const char** argv)
         LOG_DEBUG_S("put_request: " << put_request.ShortDebugString());
 
         storage.insert(put_request.key(), put_request.offset());
-
+        
 
         NProto::TPutResponse put_response;
         put_response.set_request_id(put_request.request_id());
