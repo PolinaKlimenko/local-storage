@@ -300,7 +300,15 @@ int main(int argc, const char** argv)
         NProto::TGetResponse get_response;
         get_response.set_request_id(get_request.request_id());
         
-
+        uint64_t t;
+	auto it = storage.find_and_fill_t(get_request.key(), t);
+	if (it) {
+		get_response.set_offset(t);
+	}
+	
+	
+        
+        
         std::stringstream response;
         serialize_header(GET_RESPONSE, get_response.ByteSizeLong(), response);
         get_response.SerializeToOstream(&response);
