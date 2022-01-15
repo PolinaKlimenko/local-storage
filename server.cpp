@@ -146,6 +146,121 @@ SocketStatePtr accept_connection(
 
 }   // namespace
 
+
+////////////////////////////////////////////////////////////////////////
+class HashTable {
+private:
+    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>> table[2];
+    std::thread write_thread;
+    std::string log_file[2] = {"log1.log", "log2.log"};
+    std::string table_file[2] = {"table1.tab", "table2.tab"};
+    std::ofstream log_out;
+    std::mutex mutex;
+    uint64_t active_ind = 0;
+    uint64_t current_version = 1;
+    uint64_t flush_size = -1;
+    bool running;	
+    
+    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>& active() {
+         return table [active_ind % 2];
+    }
+    std::unordered_map<std::string, std::pair<uint64_t, uint64_t>>& inactive() {
+         return table [(active_ind + 1) % 2];
+    }
+
+    void write_thread_func() {
+        while (running) {
+            std::ofstream table_out(table_file[(active_ind + 1) % 2], std::ofstream::out | std::ofstream::trunc);
+            uint64_t counter = 0;
+            for (auto& it: inactive()) {
+                table_out << it.first << " " << it.second.first << " " << it.second.second << "\n";
+                if (flush_size > 0 && flush_size >= counter) {
+                    table_out.flush();
+                    counter = 0;
+                }
+            }
+            table_out.flush();
+            table_out.close();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+            std::lock_guard<std::mutex> g(mutex);
+            active_ind++;
+            log_out.flush();
+            log_out.close();
+            log_out.open(log_file[active_ind % 2], std::ofstream::out | std::ofstream::trunc);
+        }
+    }
+
+
+
+    void restore() {
+	for(int i = 0; i < 2; i++){
+            std::ifstream table_in(table_file[i]);
+    	    std::ifstream log_in(log_file[i]);
+
+   	    std::string key;
+    	    std::uint64_t value;
+	    std::uint64_t version;
+    	    while (table_in >> key >> value >> version) {
+                table[i][key] = {value, version};    
+                if (version + 1 > current_version){
+                    current_version = version + 1;
+                }
+    	   }
+
+    	    while (log_in >> key >> value >> version) {
+                table[i][key] = {value, version};    
+                if (version + 1 > current_version){
+                    current_version = version + 1;
+                }
+    	   }
+
+    	    table_in.close();
+    	    log_in.close();
+    }
+
+}
+
+public:
+    HashTable() {
+        std::lock_guard<std::mutex> g(mutex);
+	running = true;
+     	restore();
+	log_out.open(log_file[active_ind % 2], std::ofstream::trunc);
+        write_thread = std::thread([this] { write_thread_func(); });
+
+    }
+    ~HashTable(){
+        running = false;
+        write_thread.join();
+        log_out.flush();
+        log_out.close();
+    }
+
+    std::pair<bool, uint64_t> find(const std::string &key) {
+        std::lock_guard<std::mutex> g(mutex);
+	std::pair<uint64_t, uint64_t> value;
+	for(int i = 0; i < 2; i++){
+            auto it = table[i].find(key);
+		if (it != table[i].end() && it->second.second > value.second) {
+                value = it->second;
+            }
+        }
+        return std::make_pair(value.second != 0, value.first);
+    }
+
+    void insert(const std::string &key, const uint64_t &value) {
+        std::lock_guard<std::mutex> g(mutex);
+        log_out << key << " " << value << current_version <<"\n";
+        table[active_ind % 2][key] = {value, current_version};
+	current_version++;
+    }
+
+
+};
+
+
+
 ////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc, const char** argv)
@@ -192,8 +307,9 @@ int main(int argc, const char** argv)
      */
 
     // TODO on-disk storage
-    std::unordered_map<std::string, uint64_t> storage;
-
+    HashTable storage;
+    
+    
     auto handle_get = [&] (const std::string& request) {
         NProto::TGetRequest get_request;
         if (!get_request.ParseFromArray(request.data(), request.size())) {
@@ -207,7 +323,7 @@ int main(int argc, const char** argv)
         NProto::TGetResponse get_response;
         get_response.set_request_id(get_request.request_id());
         auto it = storage.find(get_request.key());
-        if (it != storage.end()) {
+        if (it.first) {
             get_response.set_offset(it->second);
         }
 
@@ -228,7 +344,8 @@ int main(int argc, const char** argv)
 
         LOG_DEBUG_S("put_request: " << put_request.ShortDebugString());
 
-        storage[put_request.key()] = put_request.offset();
+        storage.insert(put_request.key(), put_request.offset());
+
 
         NProto::TPutResponse put_response;
         put_response.set_request_id(put_request.request_id());
