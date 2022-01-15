@@ -36,7 +36,7 @@ constexpr int max_events = 32;
 ////////////////////////////////////////////////////////////////////////
 class PersistentHashTable {
 private:
-    std::unordered_map<k, v> map;
+    std::unordered_map<std::string, uint64_t> map;
     std::thread write_thread;
     std::string log_file = "log.txt";
     std::string map_file = "map.txt";
@@ -279,7 +279,7 @@ int main(int argc, const char** argv)
      */
 
     // TODO on-disk storage
-    PersistentHashTable <std::string, uint64_t> storage;
+    PersistentHashTable  storage;
 
     
     
