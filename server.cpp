@@ -9,6 +9,8 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <thread>
+#include <fstream>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -30,13 +32,14 @@ namespace {
 ////////////////////////////////////////////////////////////////////////////////
 
 constexpr int max_events = 32;
+template <typename k, typename v>
 
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////
 class PersistentHashTable {
 private:
-    std::unordered_map<std::string, uint64_t> map;
+    std::unordered_map<k,v> map;
     std::thread write_thread;
     std::string log_file = "log.txt";
     std::string map_file = "map.txt";
@@ -279,7 +282,7 @@ int main(int argc, const char** argv)
      */
 
     // TODO on-disk storage
-    PersistentHashTable  storage;
+    PersistentHashTable <std::string, uint64_t> storage;
 
     
     
@@ -296,10 +299,7 @@ int main(int argc, const char** argv)
 
         NProto::TGetResponse get_response;
         get_response.set_request_id(get_request.request_id());
-        auto it = storage.find(get_request.key());
-        if (it.first) {
-            get_response.set_offset(it->second);
-        }
+        
 
         std::stringstream response;
         serialize_header(GET_RESPONSE, get_response.ByteSizeLong(), response);
